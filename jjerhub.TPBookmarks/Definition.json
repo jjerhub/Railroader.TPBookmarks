@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 7,
+  "id": "jjerhub.TPBookmarks",
+  "name": "TP Bookmarks",
+  "version": "1.0.0",
+  "assemblies": [ "jjerhub.TPBookmarks" ],
+  "requires": [
+    {
+      "id": "railloader",
+      "notBefore": "1.9.6.8"
+    }
+  ]
+}

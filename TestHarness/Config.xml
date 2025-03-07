@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Config xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Name="TestHarness">
+  <Folder>TPBookmarks</Folder>
+  <ModsDirectory>jjerhub.TPBookmarks\bin\Debug</ModsDirectory>
+  <ModInfo>Info.json</ModInfo>
+  <GameExe>TestHarness.exe</GameExe>
+  <StartingPoint>[TestHarness.exe]TestHarness.Program.Main:Before</StartingPoint>
+  <MinimalManagerVersion>0.27.8</MinimalManagerVersion>
+</Config>
