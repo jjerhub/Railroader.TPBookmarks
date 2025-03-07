@@ -225,7 +225,7 @@ namespace jjerhub.TPBookmarks
 
                     camera.JumpToPoint(location.Value, rotation.Value);
                     //CameraSelector.shared.SetCamera(CameraSelector.CameraIdentifier.Strategy, CameraSelector.shared.GetComponent<ICameraSelectable>());
-                    return ($"Jump to {thisAddition.Keyword}" + ((showDescription && thisAddition.Description != null) ? $" - \"{thisAddition.Description}\"" : ""), depth);
+                    return ($"Jump to {thisAddition.Keyword}{(!showDescription ? "" : (thisAddition.Description == null ? "" : $" - \"{thisAddition.Description}\""))}", depth);
                 }
                 else Logger.Info($"Unable to parse location for TP target: \"{arg}\"");
             }
