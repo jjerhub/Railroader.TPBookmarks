@@ -1,0 +1,46 @@
+on:
+  release:
+    types:
+      - created
+      
+jobs:
+  build:        
+    runs-on: mcr.microsoft.com/dotnet/framework/runtime:4.8-windowsservercore-ltsc2019
+
+    env:
+      Solution_Name: 'TPBookmarks.sln'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore the application
+        run: msbuild $env:Solution_Name /t:Restore /p:Configuration=Release
+          
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FinalArtifacts
+          path: jjerhub.TPBookmarks\bin\Release | findstr '*.dll' 'Definition.json'
+          
+  zip:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Zip
+        run: zip -r TPBookmarks.zip 
+        
+      - name: Amend release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: TPBookmarks.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
