@@ -2,7 +2,7 @@
   "manifestVersion": 7,
   "id": "jjerhub.TPBookmarks",
   "name": "TP Bookmarks",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "assemblies": [ "jjerhub.TPBookmarks" ],
   "requires": [
     {
