@@ -262,7 +262,7 @@ namespace jjerhub.TPBookmarks
                 if (args.Length > 2)
                 {
                     arg = args[2].Trim('\"');
-                    newItem = __state.Additions?.FirstOrDefault(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant());
+                    newItem = __state.Additions?.FirstOrDefault(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant())?.Clone();
 
                     Logger.Debug($"Check create: {arg}, keyword: {newItem?.Keyword}");
                     if (String.IsNullOrWhiteSpace(newItem?.Keyword)) newItem = new TPAddition() { Keyword = arg };
@@ -305,10 +305,10 @@ namespace jjerhub.TPBookmarks
 
                             if (__state.Additions == null) __state.Additions = new TPAdditions();
 
-                            __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem;
+                            __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem.Clone();
                             Logger.Debug($"additions contains {__state.Additions.Count} items before writing to disk");
                             Logger.Debug($"additions first keyword: {__state.Additions.FirstOrDefault(i => true).Keyword}");
-                            WriteToFile(ref __state);
+                            WriteToFile(__state.Clone());
                             output = $"Successfully added new TP target: \"{arg}\"";
 
                             scope.Complete();
@@ -325,8 +325,8 @@ namespace jjerhub.TPBookmarks
                             if (newItem.Description == null) newItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
 
                             if (newItem.Description == "null") newItem.Description = null;
-                            __state.Additions[arg.ToLowerInvariant()] = newItem;
-                            WriteToFile(ref __state);
+                            __state.Additions[arg.ToLowerInvariant()] = newItem.Clone();
+                            WriteToFile(__state.Clone());
                             output = $"Successfully updated TP target: \"{newItem.Keyword}\"";
                         }
                         else if (arg == null) output = "You must specify a TP target when using the update command";
@@ -342,7 +342,7 @@ namespace jjerhub.TPBookmarks
                         if (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant()) ?? false)
                         {
                             __state.Additions.Remove(arg.ToLowerInvariant());
-                            WriteToFile(ref __state);
+                            WriteToFile(__state.Clone());
                             output = $"Successfully removed TP target: \"{arg}\"";
                         }
                         else if (arg == null) output = "You must specify a TP target when using the remove command";
@@ -359,10 +359,12 @@ namespace jjerhub.TPBookmarks
                         else if (String.IsNullOrWhiteSpace(newItem.AliasFor)) output = "You must specify an alias name when using the alias command";
                         else
                         {
+                            if (__state.Additions == null) __state.Additions = new TPAdditions();
+
                             Logger.Debug("Attempting write alias for: " + newItem.Keyword);
                             if (newItem.Description == "null") newItem.Description = null;
-                            __state.Additions[arg.ToLowerInvariant()] = newItem;
-                            WriteToFile(ref __state);
+                            __state.Additions[arg.ToLowerInvariant()] = newItem.Clone();
+                            WriteToFile(__state.Clone());
                             output = $"Successfully set TP target: \"{newItem.Keyword}\" as an alias for: \"{newItem.AliasFor}\"";
                         }
 
@@ -379,17 +381,17 @@ namespace jjerhub.TPBookmarks
 
                             if (oldItem?.Keyword != null)
                             {
-                                if (oldItem?.AliasFor != newItem.Keyword)
+                                if (oldItem.AliasFor != newItem.Keyword)
                                 {
-                                    newItem.Description = oldItem?.Description;
-                                    newItem.Coords = oldItem?.Coords;
-                                    newItem.AliasFor = oldItem?.AliasFor;
+                                    var tmpKeyword = newItem.Keyword;
+                                    newItem = oldItem.Clone();
+                                    newItem.Keyword = tmpKeyword;
                                     __state.Additions.Remove(arg.ToLowerInvariant());
-                                    __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem;
-                                    WriteToFile(ref __state);
+                                    __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem.Clone();
+                                    WriteToFile(__state.Clone());
                                     output = $"Successfully renamed TP target: \"{oldItem.Keyword}\" to: \"{newItem.Keyword}\"";
                                 }
-                                else output = $"Unable to rename \"{arg}\" to \"{newItem.Keyword}\" because this target would become an alias of itself.";
+                                else output = $"Unable to rename \"{oldItem.Keyword}\" to \"{newItem.Keyword}\" because this target would become an alias of itself.";
                             }
                             else output = $"Unable to rename \"{arg}\" to \"{newItem.Keyword}\". Unable to find a teleport target for \"{arg}\".";
                         }
@@ -431,7 +433,7 @@ namespace jjerhub.TPBookmarks
             }
             else if (args.Length > 1 && args.Length < 3)
             {
-                arg = args[1].ToLowerInvariant();
+                arg = args[1];
             }
 #if DEBUG
             Logger.Info($"checking state before final error check. arg: \"{arg}\", cmd: \"{command}\", output: \"{output}\"");
@@ -576,7 +578,7 @@ namespace jjerhub.TPBookmarks
             return $"{output}{(output == String.Empty ? "" : ",\n")}{(indent ? "\t" : "")}{rem}";
         }
 
-        private static void WriteToFile(ref PatchState __state)
+        private static void WriteToFile(PatchState __state)
         {
             var additions = __state.Additions;
 
@@ -681,6 +683,16 @@ namespace jjerhub.TPBookmarks
         public TPAdditions Additions;
         public string[] Args;
         public DateTime LastAdditionModified;
+
+        public PatchState Clone()
+        {
+            return new PatchState()
+            {
+                Additions = Additions.Clone(),
+                Args = Args,
+                LastAdditionModified = LastAdditionModified
+            };
+        }
     }
 
 
@@ -697,6 +709,14 @@ namespace jjerhub.TPBookmarks
         }
 
         public uint Count => (uint)contents.Keys.Count;
+
+        public TPAdditions Clone()
+        {
+            return new TPAdditions()
+            {
+                contents = new SortedList<uint, TPAddition>(contents)
+            };
+        }
 
         IEnumerator<KeyValuePair<uint, TPAddition>> IEnumerable<KeyValuePair<uint, TPAddition>>.GetEnumerator()
         {
@@ -736,7 +756,7 @@ namespace jjerhub.TPBookmarks
 
         public void Remove(string key)
         {
-            uint? keyId = contents.FirstOrDefault(c => c.Value.Keyword == key).Key;
+            uint? keyId = contents.FirstOrDefault(c => c.Value.Keyword.ToLowerInvariant() == key).Key;
 
             if (keyId != null) contents.Remove(keyId.Value);
         }
@@ -762,5 +782,16 @@ namespace jjerhub.TPBookmarks
         public string AliasFor;
         public string Description;
         public string Coords;
+
+        public TPAddition Clone()
+        {
+            return new TPAddition()
+            {
+                Keyword = Keyword,
+                AliasFor = AliasFor,
+                Description = Description,
+                Coords = Coords
+            };
+        }
     }
 }
