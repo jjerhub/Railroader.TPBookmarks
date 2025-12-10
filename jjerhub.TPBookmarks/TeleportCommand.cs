@@ -11,7 +11,6 @@ using Character;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Transactions;
-using Railloader;
 using Serilog;
 using Serilog.Events;
 using Serilog.Configuration;
@@ -100,59 +99,44 @@ namespace jjerhub.TPBookmarks
         public string Description;
     }
 
-    public class TeleportCommand : PluginBase
+    public class TeleportCommand
     {
         static Harmony harmony = new Harmony("com.jjerhub.TPBookmarks");
-        static MethodBase original = typeof(UI.Console.Commands.TeleportCommand).GetMethod("Execute");
+
+        public static void ApplyPatch()
+        {
+            harmony.PatchAll();
+        }
+    }
+
+    [HarmonyPatch(typeof(UI.Console.Commands.TeleportCommand), "Execute")]
+    public static class TeleportCommandPatch
+    {
         static readonly string asmPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         static readonly string bookmarkPath = Path.Combine(asmPath, "bookmarks.json");
         static readonly bool showDescription = true; //TODO: make this a setting
         static readonly object lockObj = new object();
         static Task writeWait = null;
         static CancellationTokenSource writeCancel = null;
-        static Serilog.Core.LoggingLevelSwitch logLevel = new Serilog.Core.LoggingLevelSwitch();
         private static Serilog.ILogger Logger = null;
-        private readonly IModDefinition self;
-        private IUIHelper uIHelper;
-        internal IModdingContext ModdingContext { get; private set; }
 
-        public TeleportCommand(IModDefinition self, IModdingContext moddingContext, IUIHelper uIHelper)
+        public static void Init()
         {
-            this.self = self;
-            this.uIHelper = uIHelper;
-            ModdingContext = moddingContext;
-
-            Init();
+            if (Logger == null) Logger = Log.ForContext(typeof(TeleportCommandPatch));
         }
 
-        public void Init()
-        {
-            var myPostfixMethod = typeof(TeleportCommand).GetMethod("EndTeleport");
-            var myPrefixMethod = typeof(TeleportCommand).GetMethod("BeginTeleport");
-            //Log.Logger = new LoggerConfiguration()
-            //.MinimumLevel.ControlledBy(logLevel)
-            //.Enrich.MyLogEnricher()
-            //.WriteTo.MySerilogSink()
-            //.CreateLogger();
-
-            if (Logger == null) Logger = Log.ForContext<TeleportCommand>();
-
-#if DEBUG
-            logLevel.MinimumLevel = LogEventLevel.Debug;
-#endif
-
-            Logger.Info($"Trying harmony patch...");
-            harmony.Patch(original, prefix: new HarmonyMethod(myPrefixMethod), postfix: new HarmonyMethod(myPostfixMethod));
-            Logger.Info("Harmony patch finished...");
-        }
-
+        [HarmonyPrefix]
         public static void BeginTeleport(ref PatchState __state, string[] comps)
         {
+            Init();
+            Logger.Debug($"Setting state");
             __state = new PatchState() { Args = comps };
         }
 
+        [HarmonyPostfix]
         public static void EndTeleport(ref PatchState __state, ref string __result)
         {
+            Init();
             Logger.Debug($"Result before patching: \"{__result}\"");
 
             if (__result == "nothing") return;
@@ -411,7 +395,7 @@ namespace jjerhub.TPBookmarks
 #if DEBUG
                     var mappedValues = new string[] { "test me" };
 #else
-                        var mappedValues = SpawnPoint.All.OrderBy(sp => sp.name.ToLowerInvariant()).Select(sp => sp.name.ToLowerInvariant());
+                        var mappedValues = SpawnPoint.All.OrderBy(sp => sp.name.ToLowerInvariant())?.Select(sp => sp.name.ToLowerInvariant());
 #endif
                         rendered = rendered.Union(mappedValues);
                         output = $"Mapped TP targets:\n{WrappedLine(String.Join(", ", rendered))}";
@@ -456,7 +440,7 @@ namespace jjerhub.TPBookmarks
 #if DEBUG
                 var mappedValues = "test me";
 #else
-                var mappedValues = SpawnPoint.All.OrderBy(sp => sp.name.ToLowerInvariant()).Select(sp => sp.name.ToLowerInvariant());
+                var mappedValues = SpawnPoint.All.OrderBy(sp => sp.name.ToLowerInvariant())?.Select(sp => sp.name.ToLowerInvariant());
 #endif
                 if (String.IsNullOrWhiteSpace(output))
                 {
@@ -680,9 +664,9 @@ namespace jjerhub.TPBookmarks
 
     public class PatchState
     {
-        public TPAdditions Additions;
-        public string[] Args;
-        public DateTime LastAdditionModified;
+        public TPAdditions Additions = new TPAdditions();
+        public string[] Args = new string[0];
+        public DateTime LastAdditionModified = DateTime.MinValue;
 
         public PatchState Clone()
         {
@@ -700,7 +684,7 @@ namespace jjerhub.TPBookmarks
     public class TPAdditions : IEnumerable<KeyValuePair<uint, TPAddition>>, IEnumerable<TPAddition>
     {
         private SortedList<uint, TPAddition> contents = new SortedList<uint, TPAddition>();
-        private readonly Serilog.ILogger logger = Log.ForContext<TeleportCommand>();
+        private readonly Serilog.ILogger logger = Log.ForContext(typeof(TeleportCommandPatch));
 
         public TPAdditions() { }
         public TPAdditions(IEnumerable<KeyValuePair<uint, TPAddition>> rawInput)

@@ -1,0 +1,9 @@
+{
+  "Id": "jjerhub.TPBookmarks",
+  "DisplayName": "TP Bookmarks",
+  "Version": "1.0.2",
+  "ManagerVersion": "0.32.4",
+  "GameVersion": "2025.1.0",
+  "AssemblyName": "jjerhub.TPBookmarks",
+  "EntryMethod": "TeleportCommand.ApplyPatch",
+}
