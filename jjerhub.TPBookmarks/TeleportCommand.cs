@@ -16,8 +16,7 @@ using Serilog.Events;
 using Serilog.Configuration;
 using Serilog.Core;
 using System.Diagnostics;
-using Helpers;
-using Newtonsoft.Json.Serialization;
+using UnityModManagerNet;
 
 namespace jjerhub.TPBookmarks
 {
@@ -102,10 +101,31 @@ namespace jjerhub.TPBookmarks
     public class TeleportCommand
     {
         static Harmony harmony = new Harmony("com.jjerhub.TPBookmarks");
+        public static bool enabled;
 
-        public static void ApplyPatch()
+        public static bool ApplyPatch(UnityModManager.ModEntry modEntry)
         {
-            harmony.PatchAll();
+            modEntry.OnToggle = (entry, value) =>
+            {
+                if (value)
+                {
+                    if (!enabled)
+                    {
+                        harmony.PatchAll();
+                        enabled = true;
+                    }
+                }
+                else
+                {
+                    if (enabled)
+                    {
+                        harmony.UnpatchAll(harmony.Id);
+                        enabled = false;
+                    }
+                }
+                return true;
+            };
+            return true;
         }
     }
 
@@ -141,7 +161,7 @@ namespace jjerhub.TPBookmarks
 
             if (__result == "nothing") return;
 
-            if (!__result.StartsWith("Jump to") && !__result.StartsWith("Follow"))
+            if (!__result.StartsWith("Jump") && !__result.StartsWith("Follow"))
             {
                 try
                 {
@@ -209,7 +229,8 @@ namespace jjerhub.TPBookmarks
 
                     camera.JumpToPoint(location.Value, rotation.Value);
                     //CameraSelector.shared.SetCamera(CameraSelector.CameraIdentifier.Strategy, CameraSelector.shared.GetComponent<ICameraSelectable>());
-                    return ($"Jump to {thisAddition.Keyword}{(!showDescription ? "" : (thisAddition.Description == null ? "" : $" - \"{thisAddition.Description}\""))}", depth);
+                    //return ($"Jumped to {thisAddition.Keyword}{(!showDescription ? "" : (thisAddition.Description == null ? "" : $" - \"{thisAddition.Description}\""))}", depth);
+                    return ($"Jumped to {thisAddition.AliasFor ?? thisAddition.Keyword}", depth);
                 }
                 else Logger.Info($"Unable to parse location for TP target: \"{arg}\"");
             }
@@ -225,7 +246,7 @@ namespace jjerhub.TPBookmarks
                 new CommandList(){ Commands = new string[]{ "update", "upd" }, Description = "Use: /tp <command> <target>[ \"<description>\"]" },
                 new CommandList(){ Commands = new string[]{ "remove", "rm" }, Description = "Use: /tp <command> <target>" }, 
                 new CommandList(){ Commands = new string[]{ "?" } }, 
-                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <target> <alias>[ \"<description>\"]" }, 
+                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <alias> <target>[ \"<description>\"]" }, 
                 new CommandList(){ Commands = new string[]{ "rename", "rn" }, Description = "Use: /tp <command> <oldName> <newName>" },
                 new CommandList(){ Commands = new string[]{ "info", "list", "ls" }, Description = "Use: /tp list[ <target>]" },
             };
@@ -252,33 +273,34 @@ namespace jjerhub.TPBookmarks
                     if (String.IsNullOrWhiteSpace(newItem?.Keyword)) newItem = new TPAddition() { Keyword = arg };
                 }
 
+                //check for description/alias
                 if (newItem != null)
                 {
                     if (args.Length >= 4 && (args[3]?.Trim('\"').Length ?? 1) != 0)
                     {
                         if (commands[4].Commands.Contains(command)) //alias
                         {
-                            if (commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[3]?.Trim('\"') == cmd))) output = $"\"{args[3]}\" is an invalid name for an alias target because it is a reserved word.";
-                            else
-                            {
-                                newItem.AliasFor = args[3]?.Trim('\"');
+                            newItem.AliasFor = args[3]?.Trim('\"');
 
-                                if (args.Length > 4) newItem.Description = args[4]?.Trim('\"');
-                            }
+                            if (args.Length > 4) newItem.Description = args[4]?.Trim('\"');
                         }
-                        else if (commands[5].Commands.Contains(command)) //rename
-                        {
-                            if (commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[3].Trim('\"') == cmd))) output = $"\"{args[3]}\" is an invalid name for a teleport target because it is a reserved word.";
-                            else newItem.Keyword = args[3].Trim('\"');
-                        }
-                        else if (commands[0].Commands.Contains(command) || commands[1].Commands.Contains(command)) newItem.Description = args[3]?.Trim('\"'); //add/update
+                        //add/update/rename
+                        else if (commands[5].Commands.Contains(command) || commands[0].Commands.Contains(command) || commands[1].Commands.Contains(command)) newItem.Description = args[3]?.Trim('\"');
                     }
                 }
 
                 if (commands[0].Commands.Contains(command)) //add
                 {
-                    if (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.Trim().ToLowerInvariant() == arg.ToLowerInvariant()) ?? false) output = $"\"{arg}\" is already listed as a keyword.  You must specify a keyword that doesn't already exist, or use the \"update\" command.\n";
-                    else if (arg == null) output = "You must specify a TP target when using the add command";
+                    if 
+                    (
+                            (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.Trim().ToLowerInvariant() == arg.ToLowerInvariant()) ?? false)
+                            || SpawnPoint.All.Any(p => p.name.ToLowerInvariant() == arg.ToLowerInvariant())
+                    )
+                        output = $"\"{arg}\" is already listed as a keyword.  You must specify a keyword that doesn't already exist, or use the \"update\" command.\n";
+                    else if (commands.Any(cg => cg.Commands.Any(c => arg.ToLowerInvariant() == c))) 
+                        output = $"\"{arg}\" is an invalid name for a teleport target because it is a reserved word.";
+                    else if (arg == null) 
+                        output = "You must specify a TP target when using the add command";
                     else
                     {
                         Logger.Debug("Attempting to add new TP location");
@@ -313,8 +335,10 @@ namespace jjerhub.TPBookmarks
                             WriteToFile(__state.Clone());
                             output = $"Successfully updated TP target: \"{newItem.Keyword}\"";
                         }
-                        else if (arg == null) output = "You must specify a TP target when using the update command";
-                        else output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
+                        else if (arg == null) 
+                            output = "You must specify a TP target when using the update command";
+                        else 
+                            output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
 
                         scope.Complete();
                     }
@@ -329,8 +353,10 @@ namespace jjerhub.TPBookmarks
                             WriteToFile(__state.Clone());
                             output = $"Successfully removed TP target: \"{arg}\"";
                         }
-                        else if (arg == null) output = "You must specify a TP target when using the remove command";
-                        else output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
+                        else if (arg == null) 
+                            output = "You must specify a TP target when using the remove command";
+                        else 
+                            output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
 
                         scope.Complete();
                     }
@@ -339,8 +365,20 @@ namespace jjerhub.TPBookmarks
                 {
                     using (var scope = new TransactionScope())
                     {
-                        if (arg == null) output = "You must specify a TP target when using the alias command";
-                        else if (String.IsNullOrWhiteSpace(newItem.AliasFor)) output = "You must specify an alias name when using the alias command";
+                        if (arg == null) 
+                            output = "You must specify a TP target when using the alias command";
+                        else if (String.IsNullOrWhiteSpace(newItem.AliasFor)) 
+                            output = "You must specify an alias name when using the alias command";
+                        else if 
+                            (
+                                !(__state.Additions?.Any(a => a.Keyword == newItem.AliasFor) ?? false) 
+                                && !SpawnPoint.All.Any(p => p.name.ToLowerInvariant() == newItem.AliasFor)
+                            ) 
+                            output = "You must specify an existing target in order to create an alias";
+                        else if (commands.Any(cg => cg.Commands.Any(c => c == newItem.Keyword))) 
+                            output = $"\"{newItem.Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
+                        else if (newItem.AliasFor.ToLowerInvariant() == newItem.Keyword.ToLowerInvariant()) 
+                            output = $"Unable to set \"{newItem.Keyword}\" as an alias of itself.";
                         else
                         {
                             if (__state.Additions == null) __state.Additions = new TPAdditions();
@@ -359,13 +397,21 @@ namespace jjerhub.TPBookmarks
                 {
                     using (var scope = new TransactionScope())
                     {
-                        if (newItem.Keyword != null)
+                        if (newItem.Keyword == null)
+                            output = "You must specify a TP target to rename";
+                        else if (commands.Any(cg => cg.Commands.Any(c => c == newItem.Keyword))) 
+                            output = $"\"{newItem.Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
+                        else
                         {
                             var oldItem = __state.Additions[arg.ToLowerInvariant()];
 
-                            if (oldItem?.Keyword != null)
+                            if (oldItem?.Keyword == null)
+                                output = $"Unable to rename \"{arg}\" to \"{newItem.Keyword}\". Unable to find a teleport target for \"{arg}\".";
+                            else
                             {
-                                if (oldItem.AliasFor != newItem.Keyword)
+                                if (oldItem.AliasFor == newItem.Keyword)
+                                    output = $"Unable to rename \"{oldItem.Keyword}\" to \"{newItem.Keyword}\" because this target would become an alias of itself.";
+                                else
                                 {
                                     var tmpKeyword = newItem.Keyword;
                                     newItem = oldItem.Clone();
@@ -375,13 +421,7 @@ namespace jjerhub.TPBookmarks
                                     WriteToFile(__state.Clone());
                                     output = $"Successfully renamed TP target: \"{oldItem.Keyword}\" to: \"{newItem.Keyword}\"";
                                 }
-                                else output = $"Unable to rename \"{oldItem.Keyword}\" to \"{newItem.Keyword}\" because this target would become an alias of itself.";
                             }
-                            else output = $"Unable to rename \"{arg}\" to \"{newItem.Keyword}\". Unable to find a teleport target for \"{arg}\".";
-                        }
-                        else
-                        {
-                            output = "You must specify a TP target to rename";
                         }
 
                         scope.Complete();
@@ -391,7 +431,10 @@ namespace jjerhub.TPBookmarks
                 { 
                     if (arg == null)
                     {
-                        var rendered = ((IEnumerable<TPAddition>)__state.Additions).Select(a => a.Keyword.ToLowerInvariant());
+                        var rendered = ((IEnumerable<TPAddition>)__state.Additions).Select
+                            (
+                                a => $"{a.Keyword.ToLowerInvariant()}{(!showDescription ? "" : (String.IsNullOrWhiteSpace(a.Description) ? "" : $" - {a.Description}"))}"
+                            );
 #if DEBUG
                     var mappedValues = new string[] { "test me" };
 #else
