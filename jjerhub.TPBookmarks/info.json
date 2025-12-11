@@ -1,7 +1,7 @@
 {
   "Id": "jjerhub.TPBookmarks",
   "DisplayName": "TP Bookmarks",
-  "Version": "1.0.2",
+  "Version": "1.0.3",
   "ManagerVersion": "0.32.4",
   "GameVersion": "2025.1.0",
   "AssemblyName": "jjerhub.TPBookmarks.dll",
