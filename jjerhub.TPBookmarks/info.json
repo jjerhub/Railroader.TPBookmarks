@@ -1,9 +1,10 @@
 {
   "Id": "jjerhub.TPBookmarks",
   "DisplayName": "TP Bookmarks",
-  "Version": "1.0.3",
+  "Version": "1.0.5",
   "ManagerVersion": "0.32.4",
   "GameVersion": "2025.1.0",
   "AssemblyName": "jjerhub.TPBookmarks.dll",
-  "EntryMethod": "jjerhub.TPBookmarks.TeleportCommand.ApplyPatch"
+  "EntryMethod": "jjerhub.TPBookmarks.TeleportCommand.ApplyPatch",
+  "HomePage": "https://www.nexusmods.com/railroader/mods/1104"
 }

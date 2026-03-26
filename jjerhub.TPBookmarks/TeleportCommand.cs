@@ -11,84 +11,29 @@ using Character;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Transactions;
-using Serilog;
-using Serilog.Events;
-using Serilog.Configuration;
-using Serilog.Core;
-using System.Diagnostics;
-using UnityModManagerNet;
+using UMM = UnityModManagerNet.UnityModManager;
 
 namespace jjerhub.TPBookmarks
 {
-    public static class LoggerHelper
+    public static class Logger
     {
-        public static void Info(this Serilog.ILogger logger, string message)
+        const string prefix = "[jjerhub.TPBookmarks] ";
+
+        public static void Debug(string msg)
         {
-            logger.Information(message);
+#if DEBUG
+            UMM.Logger.Log($"{prefix}{msg}");
+#endif
         }
 
-        public static void Error(this Serilog.ILogger logger, Exception ex)
+        public static void Info(string msg)
         {
-            logger.Error(ex, ex?.Message);
+            UMM.Logger.Log($"{prefix}{msg}");
         }
 
-        public static LoggerConfiguration MySerilogSink(this LoggerSinkConfiguration sinkConfig, IFormatProvider formatProvider = null) => sinkConfig.Sink(new MySerilogSink(null));
-        public static LoggerConfiguration MyLogEnricher(this LoggerEnrichmentConfiguration config, IFormatProvider formatProvider = null) => config.With(new MyLogEnricher());
-    }
-
-    public class MySerilogSink : ILogEventSink
-    {
-        private readonly IFormatProvider formatProvider;
-
-        public MySerilogSink(IFormatProvider formatProvider)
+        public static void Error(string msg)
         {
-            this.formatProvider = formatProvider;
-        }
-
-        public void Emit(LogEvent logEvent)
-        {
-            var asmLocation = Assembly.GetExecutingAssembly().Location;
-            var logFilePath = asmLocation + "TPBookmarks-log.txt";
-            var message = logEvent.RenderMessage(formatProvider);
-            var fi = new FileInfo(logFilePath);
-
-            if (fi.Exists && fi.LastWriteTimeUtc.Day < DateTime.UtcNow.Day)
-            {
-                fi.CopyTo(logFilePath.Replace(".txt", $"-{fi.LastWriteTimeUtc.ToString("dd_mm_yyyy")}.txt"));
-            }
-
-            File.AppendAllText(logFilePath, DateTimeOffset.Now.ToString() + " " + message);
-
-            //do cleanup
-            Task.Run(() =>
-            {
-                var di = new DirectoryInfo(asmLocation);
-                var files = di.GetFiles();
-
-                if (files.Length > 0)
-                {
-                    var skipFiles = 3;
-                    var skipped = 0;
-                    var enumerator = files.OrderByDescending(f => f.LastWriteTimeUtc).GetEnumerator();
-
-                    while (skipped++ < skipFiles && enumerator.MoveNext()) ;
-                    while (enumerator.MoveNext()) try { enumerator.Current.Delete(); } finally { }
-                }
-            });
-        }
-    }
-
-    public class MyLogEnricher : ILogEventEnricher
-    {
-        public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory) => 
-            typeof(MyLogEnricher)
-            .GetMethod("Enrich")
-            .MakeGenericMethod(new StackTrace().GetFrame(1).GetMethod().ReflectedType)
-            .Invoke(this, new object[] { logEvent, propertyFactory });
-
-        public void Enrich<T>(LogEvent logEvent, ILogEventPropertyFactory propertyFactory) where T : class
-        {
-            logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Context", nameof(T)));
+            UMM.Logger.Error($"{prefix}{msg}");
         }
     }
 
@@ -103,7 +48,7 @@ namespace jjerhub.TPBookmarks
         static Harmony harmony = new Harmony("com.jjerhub.TPBookmarks");
         public static bool enabled;
 
-        public static bool ApplyPatch(UnityModManager.ModEntry modEntry)
+        public static bool ApplyPatch(UMM.ModEntry modEntry)
         {
             modEntry.OnToggle = (entry, value) =>
             {
@@ -130,59 +75,67 @@ namespace jjerhub.TPBookmarks
     }
 
     [HarmonyPatch(typeof(UI.Console.Commands.TeleportCommand), "Execute")]
-    public static class TeleportCommandPatch
+    internal static class TeleportCommandPatch
     {
-        static readonly string asmPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        static readonly string bookmarkPath = Path.Combine(asmPath, "bookmarks.json");
-        static readonly bool showDescription = true; //TODO: make this a setting
-        static readonly object lockObj = new object();
-        static Task writeWait = null;
-        static CancellationTokenSource writeCancel = null;
-        private static Serilog.ILogger Logger = null;
+        internal static readonly string asmPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        internal static readonly string bookmarkPath = Path.Combine(asmPath, "bookmarks.json");
+        private static readonly bool showDescription = true; //TODO: make this a setting
+        private static readonly object lockObj = new object();
+        private static Task writeWait = null;
+        private static CancellationTokenSource writeCancel = null;
+        private static uint maxAliasDepth = 3;
 
-        public static void Init()
-        {
-            if (Logger == null) Logger = Log.ForContext(typeof(TeleportCommandPatch));
-        }
+        public static void Init() { }
 
         [HarmonyPrefix]
         public static void BeginTeleport(ref PatchState __state, string[] comps)
         {
             Init();
+
             Logger.Debug($"Setting state");
-            __state = new PatchState() { Args = comps };
+            __state = new PatchState() { Args = new List<string>(comps).ToArray() };
+
+            //interrupt normal TP if we have changed it's location
+            try { if (comps.Length >= 2) if (__state.Additions?.Any(a => a.Keyword() == comps[1].Trim().ToLowerInvariant()) ?? false) comps[1] = "TPBookmarkPlaceholder"; }
+            finally { }
         }
 
         [HarmonyPostfix]
         public static void EndTeleport(ref PatchState __state, ref string __result)
         {
             Init();
-            Logger.Debug($"Result before patching: \"{__result}\"");
 
+            Logger.Debug($"Result before patching: \"{__result}\"");
             if (__result == "nothing") return;
 
-            if (!__result.StartsWith("Jump") && !__result.StartsWith("Follow"))
+            if (!__result.StartsWith("Follow"))
             {
                 try
                 {
-                    ushort depth;
-                    FileInfo fi = new FileInfo(bookmarkPath);
-
-                    if (fi.Exists && fi.LastWriteTimeUtc.Subtract(__state.LastAdditionModified).TotalSeconds > 1)
+                    Logger.Debug("Checking for custom TP bookmark");
+                    if (__result.StartsWith("Jump"))
                     {
-                        var rawAdditions = JsonConvert.DeserializeObject<IEnumerable<KeyValuePair<uint, TPAddition>>>(File.ReadAllText(bookmarkPath));
-                        __state.Additions = new TPAdditions(rawAdditions);
-                        __state.LastAdditionModified = DateTime.UtcNow;
+                        __result = "Jumped" + __result.Substring(4);
                     }
-
-                    var (arg, newOutput, wasCommand) = ValidateAndCommand(ref __state, bookmarkPath);
-
-                    if (!__result.StartsWith("Jump") && !__result.StartsWith("Follow"))
+                    else
                     {
-                        if (String.IsNullOrWhiteSpace(newOutput) && !wasCommand) (newOutput, depth) = HandleTP(ref __state, ref __result, arg, depth: 0);
+                        PollAdditions(__state);
 
-                        __result = newOutput;
+                        Logger.Debug("Running custom TP parse routine");
+                        var (arg, newOutput, wasCommand) = ValidateAndCommand(ref __state, bookmarkPath);
+
+                        if (!__result.StartsWith("Jump") && !__result.StartsWith("Follow"))
+                        {
+                            Logger.Debug("Running custom TP handler");
+                            if (String.IsNullOrWhiteSpace(newOutput) && !wasCommand) newOutput = HandleTP(ref __state, ref __result, arg);
+
+                            __result = newOutput;
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error in TP bookmark patch: {ex}");
                 }
                 finally
                 {
@@ -191,52 +144,142 @@ namespace jjerhub.TPBookmarks
             }
         }
 
-        private static (string output, ushort depth) HandleTP(ref PatchState __state, ref string formerOutput, string arg, ushort depth)
+        internal static void PollAdditions(PatchState __state)
         {
-            TPAddition addition = __state.Additions?.FirstOrDefault(a => a.Keyword.Trim().ToLowerInvariant() == arg);
+            var fileInfo = new FileInfo(bookmarkPath);
 
-            Logger.Info($"Handling TP to: \"{arg}\"");
-            if (addition != null && (!String.IsNullOrWhiteSpace(addition?.Coords) || !String.IsNullOrWhiteSpace(addition?.AliasFor)))
+            if (fileInfo.Exists)
+            {
+                if (fileInfo.LastWriteTime > __state.LastAdditionModified)
+                {
+                    try
+                    {
+                        Logger.Debug("Polling additions from file");
+                        var originalFormatAdditions = JsonConvert.DeserializeObject<IEnumerable<KeyValuePair<uint, TPAddition>>>(File.ReadAllText(bookmarkPath));
+
+                        TPAdditions fromDisk;
+
+                        if (originalFormatAdditions?.Any(a => a.Value?.Keyword() != null) ?? false) fromDisk = TPAdditions.Make(originalFormatAdditions);
+                        else fromDisk = JsonConvert.DeserializeObject<TPAdditions>(File.ReadAllText(bookmarkPath));
+
+                        if (fromDisk?.Any(a => a.Keyword() != null) ?? false)
+                        {
+                            Logger.Debug($"Found {fromDisk.Count()} additions in file, merging with state");
+                            foreach (var addition in fromDisk) if (addition != null && addition._Keyword != null) __state.Additions[addition.Keyword()] = addition.Clone();
+                            __state.LastAdditionModified = DateTime.Now;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error polling TP additions: {ex}");
+                    }
+                }
+            }
+            else
+            {
+                Logger.Info("No TP bookmark file found, starting with blank slate");
+            }
+        }
+
+        private static string HandleTP(ref PatchState __state, ref string formerOutput, string _arg)
+        {
+            var arg = _arg.Trim().ToLowerInvariant();
+            TPAddition addition = __state.TPPoints()?.FirstOrDefault(a => a.Keyword() == arg);
+
+            Logger.Debug($"Handling TP to: \"{_arg}\"");
+            if (addition != null && (!String.IsNullOrWhiteSpace(addition?.Coords) || !String.IsNullOrWhiteSpace(addition?.AliasFor())))
             {
                 Vector3? location = null;
                 Quaternion? rotation = null;
                 TPAddition thisAddition = addition ?? default;
 
-                Logger.Info($"Checking for alias redirect for \"{arg}\"");
-                if (String.IsNullOrWhiteSpace(thisAddition.AliasFor)) (location, rotation) = ParseCoords(addition.Coords);
-                else if (depth == 0)
+                Logger.Debug($"Checking for alias redirect for \"{_arg}\"");
+                if (String.IsNullOrWhiteSpace(thisAddition.AliasFor())) (location, rotation) = ParseCoords(addition.Coords);
+                else
                 {
-                    Logger.Info($"Alias found: \"{thisAddition.AliasFor}\", attempting redirect");
-                    if (__state.Additions.Any(a => a.Keyword.Trim().ToLowerInvariant() == thisAddition.AliasFor.Trim().ToLowerInvariant()))
+                    var original = thisAddition.Clone();
+                    try 
                     {
-                        return HandleTP(ref __state, ref formerOutput, thisAddition.AliasFor, ++depth);
-                    }
-                    else
-                    {
-                        var spawnPoint = SpawnPoint.All.FirstOrDefault(p => String.Compare(p.name, thisAddition.AliasFor.Trim().ToLowerInvariant(), ignoreCase: true) == 0);
+                        var results = (set: (HashSet<TPAddition>)null, end: (TPAddition)null);
+                        PeekAlias(__state, thisAddition, ref results);
 
-                        if (spawnPoint != null) (location, rotation) = spawnPoint.GamePositionRotation;
+                        thisAddition = results.end;
+                        return HandleTP(ref __state, ref formerOutput, thisAddition.Keyword());
+                    }
+                    catch (Exception ex)
+                    {
+                        var msg = $"Unable to handle TP for: \"{original._Keyword}\".";
+#if DEBUG
+                        Logger.Error($"{msg} {ex.ToString()}");
+#endif
+                        return msg;
                     }
                 }
-                else Logger.Info($"Unable to process alias: \"{thisAddition.AliasFor}\". Too much recursion.");
 
                 if (location != null)
                 {
-                    //var camera = CameraSelector.shared.strategyCamera;
                     var camera = CameraSelector.shared;
 
                     if (rotation == null) rotation = Quaternion.identity;
 
-                    camera.JumpToPoint(location.Value, rotation.Value);
-                    //CameraSelector.shared.SetCamera(CameraSelector.CameraIdentifier.Strategy, CameraSelector.shared.GetComponent<ICameraSelectable>());
-                    //return ($"Jumped to {thisAddition.Keyword}{(!showDescription ? "" : (thisAddition.Description == null ? "" : $" - \"{thisAddition.Description}\""))}", depth);
-                    return ($"Jumped to {thisAddition.AliasFor ?? thisAddition.Keyword}", depth);
-                }
-                else Logger.Info($"Unable to parse location for TP target: \"{arg}\"");
-            }
-            else Logger.Info($"Unable to TP to: \"{arg}\"");
+                    if (camera != null)
+                    {
+                        camera.JumpToPoint(location.Value, rotation.Value);
 
-            return (formerOutput, depth);
+                        return $"Jumped to {thisAddition._AliasFor ?? thisAddition._Keyword}";
+                    }
+                    else
+                    {
+                        return "No camera found to jump to location";
+                    }
+                }
+                else
+                {
+#if DEBUG
+                    Logger.Error($"Unable to parse location for TP target: \"{_arg}\"");
+#endif
+                }
+            }
+            else
+            {
+                Logger.Error($"Unable to TP to: \"{_arg}\"");
+            }
+
+            return formerOutput;
+        }
+
+        private static void PeekAlias(PatchState __state, TPAddition addition, ref (HashSet<TPAddition> set, TPAddition end) results, ushort depth = 0)
+        {
+            if (results.set == null) results.set = new HashSet<TPAddition>() { addition };
+            else results.set.Add(addition);
+            
+            results.end = addition;
+
+            if (!String.IsNullOrWhiteSpace(addition.AliasFor()))
+            {
+                TPAddition targetAddition = __state.TPPoints().FirstOrDefault(a => a.Keyword() == addition.AliasFor());
+
+                if (targetAddition != null)
+                {
+                    Logger.Debug($"Found alias target: \"{targetAddition.Keyword()}\" for alias: \"{addition.Keyword()}\"");
+                    if (!String.IsNullOrWhiteSpace(targetAddition.AliasFor()) && depth <= maxAliasDepth)
+                    {
+                        PeekAlias(__state, targetAddition, ref results, ++depth);
+                    }
+                    else if (depth > maxAliasDepth)
+                    {
+                        throw new Exception($"Max alias recursion depth reached");
+                    }
+                    else
+                    {
+                        results.end = targetAddition;
+                    }
+                }
+                else
+                {
+                    throw new Exception($"Unable to find target for alias: \"{results.end._AliasFor}\"");
+                }
+            }
         }
 
         private static (string arg, string output, bool wasCommand) ValidateAndCommand(ref PatchState __state, string bookmarkPath)
@@ -246,76 +289,89 @@ namespace jjerhub.TPBookmarks
                 new CommandList(){ Commands = new string[]{ "update", "upd" }, Description = "Use: /tp <command> <target>[ \"<description>\"]" },
                 new CommandList(){ Commands = new string[]{ "remove", "rm" }, Description = "Use: /tp <command> <target>" }, 
                 new CommandList(){ Commands = new string[]{ "?" } }, 
-                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <alias> <target>[ \"<description>\"]" }, 
+                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <original> <alias>[ \"<description>\"]" }, 
                 new CommandList(){ Commands = new string[]{ "rename", "rn" }, Description = "Use: /tp <command> <oldName> <newName>" },
                 new CommandList(){ Commands = new string[]{ "info", "list", "ls" }, Description = "Use: /tp list[ <target>]" },
             };
             string output = String.Empty;
             string command = null;
-            string arg = null;
+            string _arg = null;
+            Func<string> arg = () => _arg?.ToLowerInvariant();
             var args = __state.Args;
             bool wasCommand = false;
 
             if (args.Length > 1 && args.Length <= 5 && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[1].ToLowerInvariant() == cmd)))
             {
-                TPAddition newItem = null;
+                TPAddition targetItem = null;
+                TPAddition otherItem = null;
 
                 if (args.Length > 2 && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[2].Trim('\"').ToLowerInvariant() == cmd))) output = $"\"{args[2].Trim('\"')}\" is an invalid name for a teleport target because it is a reserved word.";
 
                 wasCommand = true;
                 command = args[1].ToLowerInvariant();
+
+                //populate vars
+                Logger.Debug("Populating command variables");
                 if (args.Length > 2)
                 {
-                    arg = args[2].Trim('\"');
-                    newItem = __state.Additions?.FirstOrDefault(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant())?.Clone();
+                    _arg = args[2].Trim('\"');
+                    targetItem = new TPAddition() { _Keyword = _arg };
 
-                    Logger.Debug($"Check create: {arg}, keyword: {newItem?.Keyword}");
-                    if (String.IsNullOrWhiteSpace(newItem?.Keyword)) newItem = new TPAddition() { Keyword = arg };
-                }
-
-                //check for description/alias
-                if (newItem != null)
-                {
-                    if (args.Length >= 4 && (args[3]?.Trim('\"').Length ?? 1) != 0)
+                    if (args.Length > 3)
                     {
-                        if (commands[4].Commands.Contains(command)) //alias
+                        if (commands[0].Commands.Contains(command)) //add
                         {
-                            newItem.AliasFor = args[3]?.Trim('\"');
-
-                            if (args.Length > 4) newItem.Description = args[4]?.Trim('\"');
+                            targetItem.Description = args[3].Trim('\"');
                         }
-                        //add/update/rename
-                        else if (commands[5].Commands.Contains(command) || commands[0].Commands.Contains(command) || commands[1].Commands.Contains(command)) newItem.Description = args[3]?.Trim('\"');
+                        else if (commands[4].Commands.Contains(command)) //alias
+                        {
+                            otherItem = new TPAddition
+                            {
+                                _AliasFor = args[3]?.Trim('\"'),
+                                _Keyword = targetItem._Keyword
+                            };
+
+                            if (args.Length > 4) otherItem.Description = args[4]?.Trim('\"');
+                        }
+                        else //update || rename
+                        {
+                            otherItem = new TPAddition
+                            {
+                                _Keyword = args[3]?.Trim('\"')
+                            };
+
+                            if (args.Length > 4) otherItem.Description = args[4]?.Trim('\"');
+                        }
                     }
                 }
 
+                Logger.Debug("Populating target info");
+                if (targetItem?.Keyword() != null && (__state.TPPoints()?.Any(a => a.Keyword() == targetItem.Keyword()) ?? false)) 
+                    targetItem = __state.TPPoints().First(a => a.Keyword() == targetItem.Keyword());
+
+                //TODO: make "commands" not order dependent
                 if (commands[0].Commands.Contains(command)) //add
                 {
                     if 
                     (
-                            (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.Trim().ToLowerInvariant() == arg.ToLowerInvariant()) ?? false)
-                            || SpawnPoint.All.Any(p => p.name.ToLowerInvariant() == arg.ToLowerInvariant())
+                            ((IEnumerable<TPAddition>)__state.TPPoints())?.Any(a => a.Keyword() == arg()) ?? false
                     )
-                        output = $"\"{arg}\" is already listed as a keyword.  You must specify a keyword that doesn't already exist, or use the \"update\" command.\n";
-                    else if (commands.Any(cg => cg.Commands.Any(c => arg.ToLowerInvariant() == c))) 
-                        output = $"\"{arg}\" is an invalid name for a teleport target because it is a reserved word.";
-                    else if (arg == null) 
+                        output = $"\"{_arg}\" is already listed as a keyword.  You must specify a keyword that doesn't already exist, or use the \"update\" command.\n";
+                    else if (commands.Any(cg => cg.Commands.Any(c => arg() == c))) 
+                        output = $"\"{_arg}\" is an invalid name for a teleport target because it is a reserved word.";
+                    else if (_arg == null) 
                         output = "You must specify a TP target when using the add command";
                     else
                     {
                         Logger.Debug("Attempting to add new TP location");
-
                         using (var scope = new TransactionScope())
                         {
-                            newItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
+                            targetItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
 
-                            if (__state.Additions == null) __state.Additions = new TPAdditions();
+                            __state.Additions.Add(targetItem.Clone());
 
-                            __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem.Clone();
-                            Logger.Debug($"additions contains {__state.Additions.Count} items before writing to disk");
-                            Logger.Debug($"additions first keyword: {__state.Additions.FirstOrDefault(i => true).Keyword}");
                             WriteToFile(__state.Clone());
-                            output = $"Successfully added new TP target: \"{arg}\"";
+                            output = $"Successfully added new TP target: \"{_arg}\"";
 
                             scope.Complete();
                         }
@@ -326,19 +382,49 @@ namespace jjerhub.TPBookmarks
                     Logger.Debug("Attempting to update TP location");
                     using (var scope = new TransactionScope())
                     {
-                        if (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant()) ?? false)
+                        Logger.Debug($"Checking for existing TP target with keyword: \"{targetItem._Keyword}\"");
+                        if ((__state.TPPoints())?.Any(a => a?.Keyword() == targetItem.Keyword()) ?? false)
                         {
-                            if (newItem.Description == null) newItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
+                            var wasError = false;
+                            var original = targetItem.Clone();
 
-                            if (newItem.Description == "null") newItem.Description = null;
-                            __state.Additions[arg.ToLowerInvariant()] = newItem.Clone();
-                            WriteToFile(__state.Clone());
-                            output = $"Successfully updated TP target: \"{newItem.Keyword}\"";
+                            Logger.Debug($"Found existing TP target for keyword: \"{targetItem._Keyword}\". Attempting data update");
+                            if (otherItem?.Description == null) //if we have description, we know coords aren't changing, so no need to dig through alias
+                            {
+                                Logger.Debug($"Attempting to peek alias for: \"{original._Keyword}\" before update");
+                                try
+                                {
+                                    var results = (set: (HashSet<TPAddition>)null, end: (TPAddition)null);
+                                    PeekAlias(__state, targetItem, ref results);
+
+                                    targetItem = results.end;
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logger.Debug($"Error peeking alias for: \"{original._Keyword}\". {ex.ToString()}");
+                                    output = $"Unable to update TP target for: \"{original._Keyword}\".";
+                                    wasError = true;
+                                }
+
+                                Logger.Debug($"Updating coords for: \"{original._Keyword}\"");
+                                if (!wasError) targetItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
+                                otherItem = targetItem.Clone();
+                            }
+                            else if (otherItem?.Description == "null") otherItem.Description = null;
+
+                            if (!wasError)
+                            {
+                                if (otherItem.IsSpawn) otherItem.IsSpawn = false;
+
+                                __state.Additions[otherItem.Keyword()] = otherItem.Clone();
+                                WriteToFile(__state.Clone());
+                                output = $"Successfully updated TP target: \"{original._Keyword}\"";
+                            }
                         }
-                        else if (arg == null) 
+                        else if (_arg == null) 
                             output = "You must specify a TP target when using the update command";
                         else 
-                            output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
+                            output = $"Unable to find \"{_arg}\" listed as a keyword. Perhaps you should \"add\" it?";
 
                         scope.Complete();
                     }
@@ -347,16 +433,16 @@ namespace jjerhub.TPBookmarks
                 {
                     using (var scope = new TransactionScope())
                     {
-                        if (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant()) ?? false)
+                        if (((IEnumerable<TPAddition>)__state.Additions)?.Any(a => a.Keyword() == arg()) ?? false)
                         {
-                            __state.Additions.Remove(arg.ToLowerInvariant());
+                            __state.Additions.Remove(targetItem.Clone());
                             WriteToFile(__state.Clone());
-                            output = $"Successfully removed TP target: \"{arg}\"";
+                            output = $"Successfully removed TP target: \"{_arg}\"";
                         }
-                        else if (arg == null) 
-                            output = "You must specify a TP target when using the remove command";
+                        else if (_arg == null) 
+                            output = "You must specify a custom TP target when using the remove command";
                         else 
-                            output = $"Unable to find \"{arg}\" listed as a keyword. Perhaps you should \"add\" it?";
+                            output = $"Unable to find \"{_arg}\" listed as a keyword. Perhaps you should \"add\" it?";
 
                         scope.Complete();
                     }
@@ -365,61 +451,92 @@ namespace jjerhub.TPBookmarks
                 {
                     using (var scope = new TransactionScope())
                     {
-                        if (arg == null) 
-                            output = "You must specify a TP target when using the alias command";
-                        else if (String.IsNullOrWhiteSpace(newItem.AliasFor)) 
+                        if (otherItem?.AliasFor() == null)
+                            output = "Existing TP target cannot be blank when using the alias command";
+                        else if (String.IsNullOrWhiteSpace(otherItem.Keyword()))
                             output = "You must specify an alias name when using the alias command";
-                        else if 
+                        else if
                             (
-                                !(__state.Additions?.Any(a => a.Keyword == newItem.AliasFor) ?? false) 
-                                && !SpawnPoint.All.Any(p => p.name.ToLowerInvariant() == newItem.AliasFor)
-                            ) 
+                                !(__state.TPPoints()?.Any(a => a.Keyword() == otherItem.AliasFor()) ?? false)
+                            )
                             output = "You must specify an existing target in order to create an alias";
-                        else if (commands.Any(cg => cg.Commands.Any(c => c == newItem.Keyword))) 
-                            output = $"\"{newItem.Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
-                        else if (newItem.AliasFor.ToLowerInvariant() == newItem.Keyword.ToLowerInvariant()) 
-                            output = $"Unable to set \"{newItem.Keyword}\" as an alias of itself.";
+                        else if (commands.Any(cg => cg.Commands.Any(c => c == otherItem.Keyword())))
+                            output = $"\"{otherItem._Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
                         else
                         {
-                            if (__state.Additions == null) __state.Additions = new TPAdditions();
+                            var original = otherItem.Clone();
+                            var tmpSet = new HashSet<TPAddition>();
+                            tmpSet.Add(otherItem);
+                            var results = (set: tmpSet, end: otherItem);
 
-                            Logger.Debug("Attempting write alias for: " + newItem.Keyword);
-                            if (newItem.Description == "null") newItem.Description = null;
-                            __state.Additions[arg.ToLowerInvariant()] = newItem.Clone();
-                            WriteToFile(__state.Clone());
-                            output = $"Successfully set TP target: \"{newItem.Keyword}\" as an alias for: \"{newItem.AliasFor}\"";
+                            try
+                            {
+                                PeekAlias(__state, otherItem, ref results);
+
+                                if (results.set.Any(a => a.AliasFor() == otherItem.Keyword()))
+                                    output = $"Unable to set \"{otherItem._Keyword}\" as an alias of itself.";
+                                else
+                                {
+                                    otherItem.Description = otherItem.Description == "null" ? null : otherItem.Description;
+
+                                    Logger.Debug("Attempting write alias for: " + original._AliasFor);
+                                    __state.Additions[otherItem.Keyword()] = otherItem.Clone();
+                                    WriteToFile(__state.Clone());
+                                    output = $"Successfully set TP target: \"{original._Keyword}\" as an alias for: \"{otherItem._AliasFor}\"";
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error(ex.ToString());
+                                output = $"Unable to find target item for alias creation from: \"{original._Keyword}\".  Unable to find: \"{results.end._AliasFor}\"";
+                            }
+                            finally
+                            {
+                                scope.Complete();
+                            }
                         }
-
-                        scope.Complete();
                     }
                 }
                 else if (commands[5].Commands.Contains(command)) //rename
                 {
                     using (var scope = new TransactionScope())
                     {
-                        if (newItem.Keyword == null)
+                        if (targetItem._Keyword == null)
                             output = "You must specify a TP target to rename";
-                        else if (commands.Any(cg => cg.Commands.Any(c => c == newItem.Keyword))) 
-                            output = $"\"{newItem.Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
+                        else if (commands.Any(cg => cg.Commands.Any(c => c == targetItem.Keyword()))) 
+                            output = $"\"{targetItem._Keyword}\" is an invalid name for a teleport target because it is a reserved word.";
+                        else if (targetItem.IsSpawn)
+                            output = "Unable to rename spawn points.";
                         else
                         {
-                            var oldItem = __state.Additions[arg.ToLowerInvariant()];
-
-                            if (oldItem?.Keyword == null)
-                                output = $"Unable to rename \"{arg}\" to \"{newItem.Keyword}\". Unable to find a teleport target for \"{arg}\".";
+                            if (targetItem?.Keyword == null)
+                                output = $"Unable to rename \"{targetItem._Keyword}\" to \"{targetItem._Keyword}\". Unable to find a teleport target for \"{targetItem._Keyword}\".";
                             else
                             {
-                                if (oldItem.AliasFor == newItem.Keyword)
-                                    output = $"Unable to rename \"{oldItem.Keyword}\" to \"{newItem.Keyword}\" because this target would become an alias of itself.";
-                                else
+                                var newItem = targetItem.Clone();
+                                var tmpSet = new HashSet<TPAddition>();
+                                tmpSet.Add(targetItem);
+                                var results = (set: tmpSet, end: targetItem);
+                                newItem._Keyword = otherItem._Keyword;
+                                newItem.Description = otherItem.Description == "null" ? null : otherItem.Description;
+
+                                try 
+                                { 
+                                    PeekAlias(__state, targetItem, ref results);
+
+                                    if (results.set.Any(a => a.AliasFor() == newItem.Keyword()) || targetItem.AliasFor() == newItem.Keyword())
+                                        output = $"Unable to rename \"{targetItem._Keyword}\" to \"{newItem._Keyword}\" because this target would become an alias of itself.";
+                                    else
+                                    {
+                                        __state.Additions[targetItem.Keyword()] = newItem.Clone();
+                                        WriteToFile(__state.Clone());
+                                        output = $"Successfully renamed TP target: \"{targetItem._Keyword}\" to: \"{newItem._Keyword}\"";
+                                    }
+                                }
+                                catch (Exception ex)
                                 {
-                                    var tmpKeyword = newItem.Keyword;
-                                    newItem = oldItem.Clone();
-                                    newItem.Keyword = tmpKeyword;
-                                    __state.Additions.Remove(arg.ToLowerInvariant());
-                                    __state.Additions[newItem.Keyword.ToLowerInvariant()] = newItem.Clone();
-                                    WriteToFile(__state.Clone());
-                                    output = $"Successfully renamed TP target: \"{oldItem.Keyword}\" to: \"{newItem.Keyword}\"";
+                                    Logger.Error(ex.ToString());
+                                    output = $"Unable to rename \"{targetItem._Keyword}\". Unable to determine alias recursion."; 
                                 }
                             }
                         }
@@ -429,48 +546,46 @@ namespace jjerhub.TPBookmarks
                 }
                 else if (commands[6].Commands.Contains(command)) //info/list
                 { 
-                    if (arg == null)
+                    if (_arg == null)
                     {
-                        var rendered = ((IEnumerable<TPAddition>)__state.Additions).Select
+                        var rendered = __state.TPPoints().Select
                             (
-                                a => $"{a.Keyword.ToLowerInvariant()}{(!showDescription ? "" : (String.IsNullOrWhiteSpace(a.Description) ? "" : $" - {a.Description}"))}"
+                                a => $"{a._Keyword}{(!showDescription ? "" : (String.IsNullOrWhiteSpace(a.Description) ? "" : $" - {a.Description}"))}"
                             );
-#if DEBUG
-                    var mappedValues = new string[] { "test me" };
-#else
-                        var mappedValues = SpawnPoint.All.OrderBy(sp => sp.name.ToLowerInvariant())?.Select(sp => sp.name.ToLowerInvariant());
-#endif
-                        rendered = rendered.Union(mappedValues);
                         output = $"Mapped TP targets:\n{WrappedLine(String.Join(", ", rendered))}";
                     }
                     else
                     {
-                        var found = ((IEnumerable<TPAddition>)__state.Additions).FirstOrDefault(a => a.Keyword.ToLowerInvariant() == arg.ToLowerInvariant());
+                        var found = __state.TPPoints().FirstOrDefault(a => a.Keyword() == arg());
 
                         if (found != null)
                         {
-                            output = $"Found: {found.Keyword}{(found.Description != null ? $" - {found.Description}" : "")}";
+                            output = $"Found: {found._Keyword}{(found.Description != null ? $" - {found.Description}" : "")}";
                         }
                         else
                         {
-                            output = $"TP bookmark: {arg} doesn't exist";
+                            output = $"TP bookmark: {_arg} doesn't exist";
                         }
                     }
                 }
             }
             else if (args.Length > 1 && args.Length < 3)
             {
-                arg = args[1];
+                _arg = args[1];
             }
-#if DEBUG
-            Logger.Info($"checking state before final error check. arg: \"{arg}\", cmd: \"{command}\", output: \"{output}\"");
-#endif
+
+            Logger.Debug($"checking state before final error check. arg: \"{_arg}\", cmd: \"{command}\", output: \"{output}\"");
             if (args.Length > 0
                 &&
                 (
-                    (String.IsNullOrWhiteSpace(arg) && !commands[6].Commands.Contains(command)) //see if its a list/info command
-                    || arg == "?"
-                    || (!String.IsNullOrWhiteSpace(command) && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => command == cmd)) && String.IsNullOrWhiteSpace(arg) && !commands[6].Commands.Contains(command))
+                    (String.IsNullOrWhiteSpace(arg()) && !commands[6].Commands.Contains(command)) //see if its a list/info command
+                    || arg() == "?"
+                    || (
+                        !String.IsNullOrWhiteSpace(command) 
+                        && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => command == cmd)) 
+                        && String.IsNullOrWhiteSpace(arg()) 
+                        && !commands[6].Commands.Contains(command)
+                       )
                     || (
                             !String.IsNullOrWhiteSpace(output)
                             && !output.StartsWith("Success")
@@ -498,7 +613,7 @@ namespace jjerhub.TPBookmarks
                 }
             }
 
-            return (arg, output, wasCommand);
+            return (arg(), output, wasCommand);
         }
 
         private static string WrappedLine(string input, bool indent = false)
@@ -539,6 +654,7 @@ namespace jjerhub.TPBookmarks
                             rem = work.Substring(offset + 2) + rem;
                             next = $"{(output == String.Empty ? "" : $"{(work.StartsWith(matchB) ? "\n\t" : ",\n")}")}{(indent ? "\t" : "")}{work.Substring(0, offset)}";
                             output += next;
+
                             Logger.Debug($"Adding {next} to output");
                             previous = null;
                             break;
@@ -607,11 +723,11 @@ namespace jjerhub.TPBookmarks
 
         private static void WriteToFile(PatchState __state)
         {
-            var additions = __state.Additions;
+            var additions = __state.Additions.Clone();
 
             if (writeWait != null)
             {
-                Logger.Info("Cancelling pending save");
+                Logger.Debug("Cancelling pending save");
                 writeCancel.Cancel();
             }
 
@@ -626,13 +742,9 @@ namespace jjerhub.TPBookmarks
                 { 
                     lock (lockObj) 
                     {
-#if DEBUG
-                        Logger.Info($"Writing file: {bookmarkPath}"); 
-#endif
+                        Logger.Debug($"Writing file: {bookmarkPath}");
                         File.WriteAllText(bookmarkPath, JsonConvert.SerializeObject(additions));
-#if DEBUG
-                        Logger.Info("File write complete");
-#endif
+                        Logger.Debug("File write complete");
                     }
                 }, writeCancel.Token);
 
@@ -642,8 +754,8 @@ namespace jjerhub.TPBookmarks
                     {
                         if (writeWait.IsFaulted)
                         {
-                            Logger.Error(writeWait.Exception);
-                            if (writeWait.Exception.InnerExceptions.Any()) foreach (var ex in writeWait.Exception.InnerExceptions) Logger.Info($"Inner exception: {ex}");
+                            Logger.Error(writeWait.Exception.ToString());
+                            if (writeWait.Exception.InnerExceptions.Any()) foreach (var ex in writeWait.Exception.InnerExceptions) Logger.Error($"Inner exception: {ex}");
                             if (additions.Any(i => true)) foreach (var a in (IEnumerable<TPAddition>)additions) 
                             throw writeWait.Exception;
                         }
@@ -671,15 +783,22 @@ namespace jjerhub.TPBookmarks
             }
         }
 
-        private static string GetSerializedCoords(bool includeRotation = false)
+        internal static string GetSerializedCoords(bool includeRotation = false)
         {
-#if DEBUG
+#if LOCAL
             var pos = new Vector3(0, 0, 0);
             var rot = new Quaternion(0, 0, 0, 0);
 #else
             var pos = CameraSelector.shared.CurrentCameraPosition;
             Quaternion rot = Quaternion.identity;
 #endif
+            return GetSerializedCoords((pos, rot), includeRotation);
+        }
+
+        internal static string GetSerializedCoords((Vector3 position, Quaternion rotation) coordObj, bool includeRotation = false)
+        {
+            var pos = coordObj.position;
+            var rot = coordObj.rotation;
             string output = $"{pos.x};{pos.y};{pos.z}";
 
             if (includeRotation) output += $";{rot.x};{rot.y};{rot.z};{rot.w}";
@@ -687,7 +806,7 @@ namespace jjerhub.TPBookmarks
             return output;
         }
 
-        private static (Vector3? location, Quaternion? rotation) ParseCoords(string coords)
+        internal static (Vector3? location, Quaternion? rotation) ParseCoords(string coords)
         {
             Vector3? location = null;
             Quaternion? rotation = null;
@@ -699,17 +818,47 @@ namespace jjerhub.TPBookmarks
                 if (parts.Length > 2) location = new Vector3(Single.Parse(parts[0]), Single.Parse(parts[1]), Single.Parse(parts[2]));
                 if (parts.Length > 6) rotation = new Quaternion(Single.Parse(parts[3]), Single.Parse(parts[4]), Single.Parse(parts[5]), Single.Parse(parts[6]));
             }
-            else Logger.Info("Invalid coords for TP target");
+            else
+            {
+#if DEBUG
+                Logger.Error("Invalid coords for TP target");
+#endif
+            }
 
             return (location, rotation);
         }
     }
 
-    public class PatchState
+    internal class PatchState
     {
-        public TPAdditions Additions = new TPAdditions();
+        internal TPAdditions Additions = new TPAdditions();
         public string[] Args = new string[0];
         public DateTime LastAdditionModified = DateTime.MinValue;
+
+        public PatchState()
+        {
+            TeleportCommandPatch.PollAdditions(this);
+        }
+
+        public TPAdditions TPPoints()
+        {
+            var result = Additions.Clone();
+
+#if LOCAL
+            result.UnionWith(new TPAddition[] {
+                new TPAddition(){ _Keyword = "test me", Coords = "0;0;0", IsSpawn=true }
+            });
+#else
+            var spawns = SpawnPoint.All
+                    .Where(sp => !result.Any(a => a.Keyword() == sp.name.Trim().ToLowerInvariant()))
+                    .Select(sp => new TPAddition() { _Keyword = sp.name, Coords = TeleportCommandPatch.GetSerializedCoords(sp.GamePositionRotation), IsSpawn = true });
+
+            if (spawns.Any())
+                result.UnionWith(spawns);
+
+#endif
+            return result;
+        }
 
         public PatchState Clone()
         {
@@ -724,101 +873,87 @@ namespace jjerhub.TPBookmarks
 
 
     [JsonArray]
-    public class TPAdditions : IEnumerable<KeyValuePair<uint, TPAddition>>, IEnumerable<TPAddition>
+    internal class TPAdditions : HashSet<TPAddition>
     {
-        private SortedList<uint, TPAddition> contents = new SortedList<uint, TPAddition>();
-        private readonly Serilog.ILogger logger = Log.ForContext(typeof(TeleportCommandPatch));
-
-        public TPAdditions() { }
-        public TPAdditions(IEnumerable<KeyValuePair<uint, TPAddition>> rawInput)
-        {
-            foreach (var item in rawInput) contents.Add(item.Key, item.Value);
-        }
-
-        public uint Count => (uint)contents.Keys.Count;
+        public TPAdditions() : base(new TPAddition()) { }
 
         public TPAdditions Clone()
         {
-            return new TPAdditions()
-            {
-                contents = new SortedList<uint, TPAddition>(contents)
-            };
-        }
+            var newSet = new TPAdditions();
+            
+            newSet.UnionWith(this);
 
-        IEnumerator<KeyValuePair<uint, TPAddition>> IEnumerable<KeyValuePair<uint, TPAddition>>.GetEnumerator()
-        {
-            using (var enumerator = contents.GetEnumerator())
-            {
-                while (enumerator.MoveNext()) yield return enumerator.Current;
-            }
-        }
-
-        IEnumerator<TPAddition> IEnumerable<TPAddition>.GetEnumerator()
-        {
-            using (var enumerator = contents.GetEnumerator())
-            {
-                while (enumerator.MoveNext()) yield return enumerator.Current.Value;
-            }
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return (this as IEnumerable<KeyValuePair<uint, TPAddition>>).GetEnumerator();
-        }
-
-        public bool Any(Func<TPAddition, bool> @delegate)
-        {
-            return (this as IEnumerable<TPAddition>).Any(@delegate);
-        }
-
-        public TPAddition FirstOrDefault(Func<TPAddition, bool> @delegate)
-        {
-            foreach (var item in (this as IEnumerable<TPAddition>))
-            {
-                if (@delegate(item)) return item;
-            }
-
-            return default;
+            return newSet;
         }
 
         public void Remove(string key)
         {
-            uint? keyId = contents.FirstOrDefault(c => c.Value.Keyword.ToLowerInvariant() == key).Key;
-
-            if (keyId != null) contents.Remove(keyId.Value);
+            var item = this.FirstOrDefault(a => a.Keyword() == key);
+            if (item != null) this.Remove(item);
         }
 
         public TPAddition this[string key]
         {
-            get => contents.FirstOrDefault(c => c.Value.Keyword.ToLowerInvariant() == key).Value;
+            get => this.FirstOrDefault(a => a.Keyword() == key);
             set
             {
-                var item = contents.FirstOrDefault(c => c.Value.Keyword.ToLowerInvariant() == key);
-
-                logger.Info($"TPAdditions - {(item.Value?.Keyword == null ? "skipping removal of old entry" : $"removing old entry: {item.Value.Keyword}")}");
-                if (!String.IsNullOrWhiteSpace(item.Value?.Keyword)) contents.Remove(item.Key);
-                logger.Info($"TPAdditions' lastKey: {(contents.Count() > 0 ? contents.Last().Key : 0)}");
-                if (value != null) contents.Add((contents.Count() > 0 ? contents.Last().Key + 1 : 0), value);
+                using (var scope = new TransactionScope())
+                {
+                    this.Remove(key);
+                    this.Add(value);
+                    scope.Complete();
+                }
             }
         }
 
+        public static TPAdditions Make(IEnumerable<KeyValuePair<uint, TPAddition>> rawAdditions)
+        {
+            var additions = new TPAdditions();
+
+            additions.UnionWith(rawAdditions.Where(kvp => kvp.Value != null).Select(kvp => kvp.Value.Clone()));
+
+            return additions;
+        }
     }
-    public class TPAddition
+
+    internal class TPAddition : IEqualityComparer<TPAddition>, IEquatable<TPAddition>
     {
-        public string Keyword;
-        public string AliasFor;
+        [JsonProperty("Keyword")]
+        internal string _Keyword;
+        [JsonProperty("AliasFor")]
+        internal string _AliasFor;
+        [JsonIgnore]
+        public Func<string> Keyword;
+        [JsonIgnore]
+        public Func<string> AliasFor;
         public string Description;
         public string Coords;
+        public bool IsSpawn = false;
+
+        public TPAddition()
+        {
+            Keyword = () => _Keyword.Trim().ToLowerInvariant();
+            AliasFor = () => _AliasFor?.Trim().ToLowerInvariant();
+        }
 
         public TPAddition Clone()
         {
             return new TPAddition()
             {
-                Keyword = Keyword,
-                AliasFor = AliasFor,
+                _Keyword = _Keyword,
+                _AliasFor = _AliasFor,
                 Description = Description,
                 Coords = Coords
             };
         }
+
+        public bool Equals(TPAddition other)
+        {
+            return _Keyword == other._Keyword;
+        }
+
+        public bool Equals(TPAddition x, TPAddition y) => x.Equals(y);
+
+        public int GetHashCode(TPAddition obj) => obj._Keyword.GetHashCode();
     }
 }
