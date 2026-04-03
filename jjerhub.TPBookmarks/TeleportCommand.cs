@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Transactions;
 using UMM = UnityModManagerNet.UnityModManager;
+using System.Diagnostics;
 
 namespace jjerhub.TPBookmarks
 {
@@ -282,17 +283,19 @@ namespace jjerhub.TPBookmarks
             }
         }
 
-        private static (string arg, string output, bool wasCommand) ValidateAndCommand(ref PatchState __state, string bookmarkPath)
-        {
-            var commands = new CommandList[]{
-                new CommandList(){ Commands = new string[]{ "add" }, Description = "Use: /tp <command> <target>[ \"<description>]\"" }, 
+        private static CommandList[] commands = new[]{
+                new CommandList(){ Commands = new string[]{ "add" }, Description = "Use: /tp <command> <target>[ \"<description>]\"" },
                 new CommandList(){ Commands = new string[]{ "update", "upd" }, Description = "Use: /tp <command> <target>[ \"<description>\"]" },
-                new CommandList(){ Commands = new string[]{ "remove", "rm" }, Description = "Use: /tp <command> <target>" }, 
-                new CommandList(){ Commands = new string[]{ "?" } }, 
-                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <original> <alias>[ \"<description>\"]" }, 
+                new CommandList(){ Commands = new string[]{ "remove", "rm" }, Description = "Use: /tp <command> <target>" },
+                new CommandList(){ Commands = new string[]{ "?" } },
+                new CommandList(){ Commands = new string[]{ "alias", "aka" }, Description = "Use: /tp <command> <original> <alias>[ \"<description>\"]" },
                 new CommandList(){ Commands = new string[]{ "rename", "rn" }, Description = "Use: /tp <command> <oldName> <newName>" },
                 new CommandList(){ Commands = new string[]{ "info", "list", "ls" }, Description = "Use: /tp list[ <target>]" },
             };
+        private static CommandList[] GetCommand(params string[] keys) => commands.Where(cl => cl.Commands.Any(c => keys.Any(r => r == c))).ToArray();
+
+        private static (string arg, string output, bool wasCommand) ValidateAndCommand(ref PatchState __state, string bookmarkPath)
+        {
             string output = String.Empty;
             string command = null;
             string _arg = null;
@@ -305,7 +308,8 @@ namespace jjerhub.TPBookmarks
                 TPAddition targetItem = null;
                 TPAddition otherItem = null;
 
-                if (args.Length > 2 && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[2].Trim('\"').ToLowerInvariant() == cmd))) output = $"\"{args[2].Trim('\"')}\" is an invalid name for a teleport target because it is a reserved word.";
+                if (args.Length > 2 && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => args[2].Trim('\"').ToLowerInvariant() == cmd))) 
+                    output = $"\"{args[2].Trim('\"')}\" is an invalid name for a teleport target because it is a reserved word.";
 
                 wasCommand = true;
                 command = args[1].ToLowerInvariant();
@@ -319,11 +323,15 @@ namespace jjerhub.TPBookmarks
 
                     if (args.Length > 3)
                     {
-                        if (commands[0].Commands.Contains(command)) //add
+                        if (GetCommand("add", "upd").Any(c => c.Commands.Contains(command))) //add/update
                         {
-                            targetItem.Description = args[3].Trim('\"');
+                            otherItem = new TPAddition
+                            {
+                                _Keyword = targetItem._Keyword,
+                                Description = args[3].Trim('\"')
+                            };
                         }
-                        else if (commands[4].Commands.Contains(command)) //alias
+                        else if (GetCommand("aka").FirstOrDefault().Commands.Contains(command)) //alias
                         {
                             otherItem = new TPAddition
                             {
@@ -333,7 +341,7 @@ namespace jjerhub.TPBookmarks
 
                             if (args.Length > 4) otherItem.Description = args[4]?.Trim('\"');
                         }
-                        else //update || rename
+                        else if (GetCommand("rn").FirstOrDefault().Commands.Contains(command)) //rename
                         {
                             otherItem = new TPAddition
                             {
@@ -349,8 +357,7 @@ namespace jjerhub.TPBookmarks
                 if (targetItem?.Keyword() != null && (__state.TPPoints()?.Any(a => a.Keyword() == targetItem.Keyword()) ?? false)) 
                     targetItem = __state.TPPoints().First(a => a.Keyword() == targetItem.Keyword());
 
-                //TODO: make "commands" not order dependent
-                if (commands[0].Commands.Contains(command)) //add
+                if (GetCommand("add").FirstOrDefault().Commands.Contains(command)) //add
                 {
                     if 
                     (
@@ -377,7 +384,7 @@ namespace jjerhub.TPBookmarks
                         }
                     }
                 }
-                else if (commands[1].Commands.Contains(command)) //update
+                else if (GetCommand("upd").FirstOrDefault().Commands.Contains(command)) //update
                 {
                     Logger.Debug("Attempting to update TP location");
                     using (var scope = new TransactionScope())
@@ -408,13 +415,15 @@ namespace jjerhub.TPBookmarks
 
                                 Logger.Debug($"Updating coords for: \"{original._Keyword}\"");
                                 if (!wasError) targetItem.Coords = GetSerializedCoords(command[command.Length - 1] == 'r');
-                                otherItem = targetItem.Clone();
                             }
                             else if (otherItem?.Description == "null") otherItem.Description = null;
 
+
+
                             if (!wasError)
                             {
-                                if (otherItem.IsSpawn) otherItem.IsSpawn = false;
+                                otherItem.Coords = otherItem.Coords ?? targetItem.Coords;
+                                otherItem.Description = otherItem.Description ?? targetItem.Description;
 
                                 __state.Additions[otherItem.Keyword()] = otherItem.Clone();
                                 WriteToFile(__state.Clone());
@@ -429,7 +438,7 @@ namespace jjerhub.TPBookmarks
                         scope.Complete();
                     }
                 }
-                else if (commands[2].Commands.Contains(command)) //remove
+                else if (GetCommand("rm").FirstOrDefault().Commands.Contains(command)) //remove
                 {
                     using (var scope = new TransactionScope())
                     {
@@ -447,7 +456,7 @@ namespace jjerhub.TPBookmarks
                         scope.Complete();
                     }
                 }
-                else if (commands[4].Commands.Contains(command)) //alias
+                else if (GetCommand("aka").FirstOrDefault().Commands.Contains(command)) //alias
                 {
                     using (var scope = new TransactionScope())
                     {
@@ -497,7 +506,7 @@ namespace jjerhub.TPBookmarks
                         }
                     }
                 }
-                else if (commands[5].Commands.Contains(command)) //rename
+                else if (GetCommand("rn").FirstOrDefault().Commands.Contains(command)) //rename
                 {
                     using (var scope = new TransactionScope())
                     {
@@ -509,8 +518,10 @@ namespace jjerhub.TPBookmarks
                             output = "Unable to rename spawn points.";
                         else
                         {
-                            if (targetItem?.Keyword == null)
-                                output = $"Unable to rename \"{targetItem._Keyword}\" to \"{targetItem._Keyword}\". Unable to find a teleport target for \"{targetItem._Keyword}\".";
+                            if (otherItem?.Keyword() == null)
+                                output = $"Unable to rename bookmark \"{targetItem.Keyword}\".  No destination bookmark specified.";
+                            else if (!__state.TPPoints().Any(p => p.Keyword() == targetItem.Keyword()))
+                                output = $"Unable to rename \"{targetItem._Keyword}\" to \"{otherItem._Keyword}\" because \"{targetItem._Keyword}\" doesn't exist as a bookmark.  Perhaps use /tp add instead?";
                             else
                             {
                                 var newItem = targetItem.Clone();
@@ -518,10 +529,10 @@ namespace jjerhub.TPBookmarks
                                 tmpSet.Add(targetItem);
                                 var results = (set: tmpSet, end: targetItem);
                                 newItem._Keyword = otherItem._Keyword;
-                                newItem.Description = otherItem.Description == "null" ? null : otherItem.Description;
+                                newItem.Description = (otherItem.Description ?? newItem.Description) == "null" ? null : (otherItem.Description ?? newItem.Description);
 
                                 try 
-                                { 
+                                {
                                     PeekAlias(__state, targetItem, ref results);
 
                                     if (results.set.Any(a => a.AliasFor() == newItem.Keyword()) || targetItem.AliasFor() == newItem.Keyword())
@@ -544,7 +555,7 @@ namespace jjerhub.TPBookmarks
                         scope.Complete();
                     }
                 }
-                else if (commands[6].Commands.Contains(command)) //info/list
+                else if (GetCommand("ls").FirstOrDefault().Commands.Contains(command)) //info/list
                 { 
                     if (_arg == null)
                     {
@@ -569,7 +580,7 @@ namespace jjerhub.TPBookmarks
                     }
                 }
             }
-            else if (args.Length > 1 && args.Length < 3)
+            else if (args.Length == 2)
             {
                 _arg = args[1];
             }
@@ -578,13 +589,13 @@ namespace jjerhub.TPBookmarks
             if (args.Length > 0
                 &&
                 (
-                    (String.IsNullOrWhiteSpace(arg()) && !commands[6].Commands.Contains(command)) //see if its a list/info command
+                    (String.IsNullOrWhiteSpace(arg()) && !GetCommand("ls").FirstOrDefault().Commands.Contains(command)) //see if its a list/info command
                     || arg() == "?"
                     || (
                         !String.IsNullOrWhiteSpace(command) 
                         && commands.Any(cmdGrp => cmdGrp.Commands.Any(cmd => command == cmd)) 
                         && String.IsNullOrWhiteSpace(arg()) 
-                        && !commands[6].Commands.Contains(command)
+                        && !GetCommand("ls").FirstOrDefault().Commands.Contains(command)
                        )
                     || (
                             !String.IsNullOrWhiteSpace(output)
@@ -845,9 +856,12 @@ namespace jjerhub.TPBookmarks
             var result = Additions.Clone();
 
 #if LOCAL
-            result.UnionWith(new TPAddition[] {
-                new TPAddition(){ _Keyword = "test me", Coords = "0;0;0", IsSpawn=true }
-            });
+            if (!result.Any(a => a.Keyword() == "test me"))
+            {
+                result.UnionWith(new TPAddition[] {
+                    new TPAddition(){ _Keyword = "test me", Coords = "0;0;0", IsSpawn=true }
+                });
+            }
 #else
             var spawns = SpawnPoint.All
                     .Where(sp => !result.Any(a => a.Keyword() == sp.name.Trim().ToLowerInvariant()))
@@ -881,7 +895,7 @@ namespace jjerhub.TPBookmarks
         {
             var newSet = new TPAdditions();
             
-            newSet.UnionWith(this);
+            newSet.UnionWith(this.Select(a => a.Clone()));
 
             return newSet;
         }

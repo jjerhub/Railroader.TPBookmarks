@@ -11,9 +11,10 @@ namespace jjerhub.TPBookmarks.TestProject1
             var state = new PatchState()
             {
                 //Args = new string[] { "tp", "test" }
-                //Args = new string[] { "tp", "upd", "test", "test2" }
+                //Args = new string[] { "tp", "upd", "test me", "test2" }
                 //Args = new string[] { "tp", "rn", "test me", "test3" }
-                Args = new string[] { "tp", "add", "test", "test2" }
+                Args = new string[] { "tp", "rn", "test3", "test4", "test5" }
+                //Args = new string[] { "tp", "add", "test", "test2" }
                 //Args = new string[] { "tp", "aka", "alj", "aljx" }
                 //Args = new string[] { "tp", "aka", "test2", "test" }
             };

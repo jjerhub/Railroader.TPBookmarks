@@ -1,97 +1,97 @@
 [
   {
-    "Keyword": "alj",
+    "Keyword": "ALJ",
     "AliasFor": "Alarka Jct",
     "Coords": null,
     "Description": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "wtr",
+    "Keyword": "WTR",
     "AliasFor": "Whittier",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "wte",
+    "Keyword": "WTE",
     "AliasFor": "East Whittier",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "bry",
+    "Keyword": "BRY",
     "AliasFor": "Bryson",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "alk",
+    "Keyword": "ALK",
     "AliasFor": "Alarka",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "dbo",
+    "Keyword": "DBO",
     "AliasFor": "Dillsboro",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "syl",
+    "Keyword": "SYL",
     "AliasFor": "Sylva",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "six",
+    "Keyword": "SIX",
     "AliasFor": null,
     "Description": "Sylva Interchange",
     "Coords": "25612.38;640.9282;378.8643",
     "IsSpawn": false
   },
   {
-    "Keyword": "alm",
+    "Keyword": "ALM",
     "AliasFor": "Almond",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "dby",
+    "Keyword": "DBY",
     "AliasFor": "Dillsboro Yard",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "crn",
+    "Keyword": "CCN",
     "AliasFor": "Cochran",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "hem",
+    "Keyword": "HEM",
     "AliasFor": "Hemingway",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "top",
+    "Keyword": "TOP",
     "AliasFor": "Topton",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "wul",
+    "Keyword": "WUL",
     "AliasFor": "Walker",
     "Description": null,
     "Coords": null,
@@ -105,21 +105,21 @@
     "IsSpawn": false
   },
   {
-    "Keyword": "wll",
-    "AliasFor": "lower walker",
+    "Keyword": "WLLL",
+    "AliasFor": "Lower Walker",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "wmt",
+    "Keyword": "WMT",
     "AliasFor": "Wilmot",
     "Description": null,
     "Coords": null,
     "IsSpawn": false
   },
   {
-    "Keyword": "and",
+    "Keyword": "AND",
     "AliasFor": "Andrews",
     "Description": null,
     "Coords": null,
